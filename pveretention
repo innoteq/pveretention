@@ -1,0 +1,69 @@
+#!/usr/bin/env python
+"""
+Title: pveretention
+Author: Michael Chinn
+License: apache-2.0
+Url: https://github.com/mechinn/pveretention
+"""
+import argparse, re, datetime, glob, os
+
+vzDefault = '/var/lib/vz/dump'
+dateFormat = "%Y_%m_%d-%H_%M_%S"
+
+
+def rmBackup(vm,backup):
+    for file in glob.glob("-".join(["vzdump",vm,backup.strftime(dateFormat)])+".*"):
+        print('Removing: '+file)
+        os.remove(file)
+
+def main():
+    parser = argparse.ArgumentParser(description="""
+        Keep Proxmox Virtual Environment backups based on given retention.
+        Either keep a number of backups for each VM or keep backups made within the last number of days.
+        The user can also specify a limited set of VMs which this program should work on.
+    """)
+    parser.add_argument('-l','--location', help='Manually set the location of the backups')
+    parser.add_argument('--vm', action='append', help='Specify the VM(s) which should be included with this')
+    modes = parser.add_mutually_exclusive_group(required=True)
+    modes.add_argument('-d','--days', type=int, help='The number of days backups should be kept')
+    modes.add_argument('-c','--count', type=int, help='The number of backups that should be kept')
+
+    args = parser.parse_args()
+    if args.location is None:
+        vzPath = vzDefault
+    else:
+        vzPath = args.location
+
+    files = []
+    for (dirpath, dirnames, filenames) in os.walk(vzPath):
+        files.extend(filenames)
+        break
+
+    vms = {}
+    logSearch = re.compile("(.+)\.log$")
+    for filename in files:
+        description = logSearch.match(filename)
+        if description:
+            descriptionParts = description.group(1).split("-")
+            key = "-".join(descriptionParts[1:3])
+            if args.vm is not None:
+                if descriptionParts[2] not in args.vm:
+                    continue
+            if key not in vms:
+                vms[key] = []
+            vms[key].append(datetime.datetime.strptime("-".join(descriptionParts[3:5]),dateFormat))
+
+    for vm, backups in vms.iteritems():
+        if args.days is None:
+            backups.reverse()
+            for backup in backups[args.count:]:
+                rmBackup(vm,backup)
+        else:
+            cutoff = datetime.datetime.today() - datetime.timedelta(days=args.days)
+            for backup in backups:
+                if backup < cutoff:
+                    rmBackup(vm,backup)
+
+
+if __name__ == '__main__':
+    main()
