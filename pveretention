@@ -27,13 +27,15 @@ def main():
     """)
     parser.add_argument('--debug', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('-l','--location', default='/var/lib/vz/dump', help='Manually set the location of the backups')
-    parser.add_argument('--vm', action='append', default='All', help='Specify the VM(s) which should be included with this')
+    parser.add_argument('--vm', action='append', default=['All'], help='Specify the VM(s) which should be included with this')
     modes = parser.add_mutually_exclusive_group(required=True)
     modes.add_argument('-d','--days', type=int, help='The number of days backups should be kept')
     modes.add_argument('-c','--count', type=int, help='The number of backups that should be kept')
 
     args = parser.parse_args()
 
+    args.vm.remove("All")
+    
     if args.debug:
         print("debug mode")
 
@@ -49,7 +51,7 @@ def main():
         if description:
             descriptionParts = description.group(1).split("-")
             key = "-".join(descriptionParts[1:3])
-            if args.vm is not "All":
+            if len(args.vm) > 0:
                 if descriptionParts[2] not in args.vm:
                     continue
             if key not in vms:
