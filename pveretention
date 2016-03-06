@@ -61,7 +61,7 @@ def main():
                 vms[key] = []
             vms[key].append(datetime.datetime.strptime("-".join(descriptionParts[3:5]),dateFormat))
 
-    for vm, backups in vms.iteritems():
+    for vm, backups in vms.items():
         if args.days is None:
             backups.reverse()
             for backup in backups[args.count:]:
