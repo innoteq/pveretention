@@ -5,9 +5,8 @@ Author: Michael Chinn
 License: apache-2.0
 Url: https://github.com/mechinn/pveretention
 """
-import argparse, re, datetime, glob, os
+import argparse, re, datetime, glob, os, sys
 
-vzDefault = '/var/lib/vz/dump'
 dateFormat = "%Y_%m_%d-%H_%M_%S"
 
 
@@ -20,14 +19,15 @@ def rmBackup(execute,location,vm,backup):
             print("Dry Run Removing: "+file)
 
 def main():
-    parser = argparse.ArgumentParser(description="""
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    description="""
         Keep Proxmox Virtual Environment backups based on given retention.
         Either keep a number of backups for each VM or keep backups made within the last number of days.
         The user can also specify a limited set of VMs which this program should work on.
     """)
     parser.add_argument('--debug', action='store_true', help=argparse.SUPPRESS)
-    parser.add_argument('-l','--location', help='Manually set the location of the backups')
-    parser.add_argument('--vm', action='append', help='Specify the VM(s) which should be included with this')
+    parser.add_argument('-l','--location', default='/var/lib/vz/dump', help='Manually set the location of the backups')
+    parser.add_argument('--vm', action='append', default='All', help='Specify the VM(s) which should be included with this')
     modes = parser.add_mutually_exclusive_group(required=True)
     modes.add_argument('-d','--days', type=int, help='The number of days backups should be kept')
     modes.add_argument('-c','--count', type=int, help='The number of backups that should be kept')
@@ -35,15 +35,10 @@ def main():
     args = parser.parse_args()
 
     if args.debug:
-        print("Debug mode")
-
-    if args.location is None:
-        vzPath = vzDefault
-    else:
-        vzPath = args.location
+        print("debug mode")
 
     files = []
-    for (dirpath, dirnames, filenames) in os.walk(vzPath):
+    for (dirpath, dirnames, filenames) in os.walk(args.location):
         files.extend(filenames)
         break
 
@@ -54,7 +49,7 @@ def main():
         if description:
             descriptionParts = description.group(1).split("-")
             key = "-".join(descriptionParts[1:3])
-            if args.vm is not None:
+            if args.vm is not "All":
                 if descriptionParts[2] not in args.vm:
                     continue
             if key not in vms:
@@ -63,14 +58,17 @@ def main():
 
     for vm, backups in vms.items():
         if args.days is None:
+            if args.count < 0:
+                print("count cannot be negative: {0}".format(args.count))
+                sys.exit(1)
             backups.reverse()
             for backup in backups[args.count:]:
-                rmBackup(not args.debug,vzPath,vm,backup)
+                rmBackup(not args.debug,args.location,vm,backup)
         else:
             cutoff = datetime.datetime.today() - datetime.timedelta(days=args.days)
             for backup in backups:
                 if backup < cutoff:
-                    rmBackup(not args.debug,vzPath,vm,backup)
+                    rmBackup(not args.debug,args.location,vm,backup)
 
 
 if __name__ == '__main__':
