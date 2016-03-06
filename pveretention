@@ -11,10 +11,13 @@ vzDefault = '/var/lib/vz/dump'
 dateFormat = "%Y_%m_%d-%H_%M_%S"
 
 
-def rmBackup(vm,backup):
-    for file in glob.glob("-".join(["vzdump",vm,backup.strftime(dateFormat)])+".*"):
-        print('Removing: '+file)
-        os.remove(file)
+def rmBackup(execute,location,vm,backup):
+    for file in glob.glob(os.sep.join([location,"-".join(["vzdump",vm,backup.strftime(dateFormat)])+".*"])):
+        if execute:
+            print('Removing: '+file)
+            os.remove(file)
+        else:
+            print("Dry Run Removing: "+file)
 
 def main():
     parser = argparse.ArgumentParser(description="""
@@ -22,6 +25,7 @@ def main():
         Either keep a number of backups for each VM or keep backups made within the last number of days.
         The user can also specify a limited set of VMs which this program should work on.
     """)
+    parser.add_argument('--debug', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('-l','--location', help='Manually set the location of the backups')
     parser.add_argument('--vm', action='append', help='Specify the VM(s) which should be included with this')
     modes = parser.add_mutually_exclusive_group(required=True)
@@ -29,6 +33,10 @@ def main():
     modes.add_argument('-c','--count', type=int, help='The number of backups that should be kept')
 
     args = parser.parse_args()
+
+    if args.debug:
+        print("Debug mode")
+
     if args.location is None:
         vzPath = vzDefault
     else:
@@ -57,12 +65,12 @@ def main():
         if args.days is None:
             backups.reverse()
             for backup in backups[args.count:]:
-                rmBackup(vm,backup)
+                rmBackup(not args.debug,vzPath,vm,backup)
         else:
             cutoff = datetime.datetime.today() - datetime.timedelta(days=args.days)
             for backup in backups:
                 if backup < cutoff:
-                    rmBackup(vm,backup)
+                    rmBackup(not args.debug,vzPath,vm,backup)
 
 
 if __name__ == '__main__':
