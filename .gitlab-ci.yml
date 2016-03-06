@@ -1,9 +1,9 @@
-test:2.7:
-  image: python:2.7
+test:2:
+  image: python:2-onbuild
   script:
     - bash functional_test.sh
 
-test:3.5:
-    image: python:3.5
+test:3:
+    image: python:3-onbuild
     script:
     - bash functional_test.sh
