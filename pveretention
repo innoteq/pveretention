@@ -5,18 +5,62 @@ Author: Michael Chinn
 License: apache-2.0
 Url: https://github.com/mechinn/pveretention
 """
-import argparse, re, datetime, glob, os, sys
+import argparse, re, datetime, glob, os, sys, getpass
+try:
+    import paramiko
+except ImportError:
+    paramiko = None
+
 
 dateFormat = "%Y_%m_%d-%H_%M_%S"
 
+def rmBackup(debug,file):
+    if debug:
+        print("Dry Run Removing: {0}".format(file))
+    else:
+        print('Removing: {0}'.format(file))
+        os.remove(file)
 
-def rmBackup(execute,location,vm,backup):
-    for file in glob.glob(os.sep.join([location,"-".join(["vzdump",vm,backup.strftime(dateFormat)])+".*"])):
-        if execute:
-            print('Removing: '+file)
-            os.remove(file)
+def archiveBackup(args,vm,backup):
+    transport = None
+    sftp = None
+    # if we are archiving via ssh
+    if not args.debug and args.archive is not None and args.ssh is not None:
+        # login via SSH
+        transport = paramiko.Transport((args.ssh, args.port))
+        if args.password is None:
+            privateKey = paramiko.RSAKey.from_private_key_file(args.key)
+            transport.connect(hostkey = args.hostkey, username = args.user, pkey = privateKey)
         else:
-            print("Dry Run Removing: "+file)
+            transport.connect(hostkey = args.hostkey, username = args.user, password = args.password)
+        sftp = paramiko.SFTPClient.from_transport(transport)
+    for file in glob.glob(os.sep.join([args.location,"-".join(["vzdump",vm,backup.strftime(dateFormat)])+".*"])):
+        # if we are archiving do that instead of just deleting the files
+        if args.archive is not None:
+            fileParts = file.split(os.sep)
+            archiveFile = os.sep.join([args.archive,fileParts[-1]])
+            # if we are archiving via ssh then lets do that instead of just moving it locally
+            if args.ssh is not None:
+                if args.debug:
+                    print("Dry Run Putting: {0} to {1}@{2}:{3} {4}".format(file,args.user,args.ssh,args.port,archiveFile))
+                else:
+                    print("Putting: {0} to {1}@{2}:{3} {4}".format(file,args.user,args.ssh,args.port,archiveFile))
+                    sftp.put(file, archiveFile)
+                    # sftp just put the file on the remote server, it didn't delete the local version, lets do that now
+                    rmBackup(args.debug,file)
+            else:
+                if args.debug:
+                    print("Dry Run Moving: {0} to {1}".format(file,archiveFile))
+                else:
+                    print("Moving: {0} to {1}".format(file,archiveFile))
+                    os.rename(file, archiveFile)
+        else:
+            rmBackup(args.debug,file)
+    # close the ssh connections
+    if sftp is not None:
+        sftp.close()
+    if transport is not None:
+        transport.close()
 
 def main():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -28,6 +72,19 @@ def main():
     parser.add_argument('--debug', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('-l','--location', default='/var/lib/vz/dump', help='Manually set the location of the backups')
     parser.add_argument('--vm', action='append', default=['All'], help='Specify the VM(s) which should be included with this')
+
+    parser.add_argument('-a','--archive', help='Archive backups to location instead of deleting')
+
+    # if we have paramiko we can ask the user for ssh info! Otherwise the user doesnt need to know these options are here
+    if paramiko:
+        parser.add_argument('--ssh', help='Archive backups to ssh host at location defined with --archive')
+        parser.add_argument('--user', default=getpass.getuser(), help='Archive backups to ssh host with user')
+        parser.add_argument('--port', default=22, type=int, help='Archive backups to ssh host at port')
+        parser.add_argument('--key', default=os.sep.join([os.path.expanduser("~"),".ssh","id_rsa"]), help='Archive backups to ssh host with key auth')
+        parser.add_argument('--password', help='Archive backups to ssh host with password auth')
+        parser.add_argument('--hostkey', help='Archive backups to ssh host validated with host key')
+
+    # we cannot do retention based on how many days ago AND count, pick one...
     modes = parser.add_mutually_exclusive_group(required=True)
     modes.add_argument('-d','--days', type=int, help='The number of days backups should be kept')
     modes.add_argument('-c','--count', type=int, help='The number of backups that should be kept')
@@ -39,38 +96,63 @@ def main():
     if args.debug:
         print("debug mode")
 
+    # make sure that args.ssh is at least set to none if we dont have paramiko so we dont need to check for both later
+    if paramiko is None:
+        args.ssh = None
+
+    if args.ssh and not args.archive:
+        print("cannot archive via ssh without an archive directory: --archive <dir>")
+        sys.exit(1)
+
+    # get the files at the location
     files = []
     for (dirpath, dirnames, filenames) in os.walk(args.location):
         files.extend(filenames)
         break
 
+    # gather together all the log files which correspond to a backup image which can be in various compression formats
     vms = {}
     logSearch = re.compile("(.+)\.log$")
     for filename in files:
         description = logSearch.match(filename)
         if description:
             descriptionParts = description.group(1).split("-")
+            # nobody cares about descriptionParts[0] it's always "vzdump"
+            # parts 1 and 2 are the marker for VM/CT and the vm ID
             key = "-".join(descriptionParts[1:3])
+            # are we filtering by vm ID?
             if len(args.vm) > 0:
+                #ok so apparently we are, is this ID in our list?
                 if descriptionParts[2] not in args.vm:
+                    # oh it's not... NEXT!
                     continue
+            # we havent found any backups for this ID before, let's make a new list for it
             if key not in vms:
                 vms[key] = []
+            # put this backup's timestamp in the list
             vms[key].append(datetime.datetime.strptime("-".join(descriptionParts[3:5]),dateFormat))
 
+    # OK! Did we find any backups to work on?
     for vm, backups in vms.items():
+        # are we dong retation by days or by count?
         if args.days is None:
+            # ok dude, you cant have negative backups. I'm a retention script, not black magic
             if args.count < 0:
                 print("count cannot be negative: {0}".format(args.count))
                 sys.exit(1)
+            # sort backwards so that the most recent backups are on top
             backups.reverse()
+            # starting with the backup number of how many you want to keep lets get rid of the rest
             for backup in backups[args.count:]:
-                rmBackup(not args.debug,args.location,vm,backup)
+                archiveBackup(args,vm,backup)
         else:
+            # get the cutoff based on how many days ago from right now
+            # if you're crazy enough to put negative days in congrats to you, the're wont be any backups done from the future yet
             cutoff = datetime.datetime.today() - datetime.timedelta(days=args.days)
             for backup in backups:
+                # is this backup older than our cutoff? If so it's time for the backup to become random ones and zeros again
                 if backup < cutoff:
-                    rmBackup(not args.debug,args.location,vm,backup)
+                    archiveBackup(args,vm,backup)
 
 
 if __name__ == '__main__':
